@@ -52,24 +52,41 @@ const App = () => {
   const [searchRadius, setSearchRadius] = useState('50'); // Default search radius in miles
   const [dateFilter, setDateFilter] = useState(''); // New: for date range filtering (e.g., '30', '60', '90')
 
-  // IMPORTANT: Replaced hardcoded keys with environment variables for Vercel deployment
-  // You will need to set these in Vercel Project Settings -> Environment Variables.
-  // Prefix them with VITE_ as per Vite's convention for client-side exposure.
-  const TICKETMASTER_API_KEY = import.meta.env.VITE_TICKETMASTER_API_KEY;
-  const OPENCAGE_API_KEY = import.meta.env.VITE_OPENCAGE_API_KEY;
-  const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY; // This is for public video search
+  // Retry configuration for API calls
+  const MAX_RETRIES = 2; // Max attempts for any API call (initial + 2 retries)
 
-  // Firebase Configuration from Environment Variables (for Vite/Vercel)
-  // Ensure these are set in your .env file locally and in Vercel environment variables
-  const firebaseConfig = {
-    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-    appId: import.meta.env.VITE_FIREBASE_APP_ID,
-    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID // Optional, if you enabled Analytics
-  };
+  // IMPORTANT: API Keys are now accessed from the global __APP_ENV__ object
+  // injected by Vite, which means 'import.meta.env' is no longer used directly in App.jsx.
+  const TICKETMASTER_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_TICKETMASTER_API_KEY : '';
+  const OPENCAGE_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_OPENCAGE_API_KEY : '';
+  const YOUTUBE_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_YOUTUBE_API_KEY : ''; // This is for public video search
+
+  // Firebase Configuration is now directly injected as a global object by Canvas
+  // This should resolve the issue of the Firebase API key being misinterpreted.
+  const firebaseConfig = (() => {
+    let config = {
+        apiKey: '', authDomain: '', projectId: '', storageBucket: '', messagingSenderId: '', appId: '', measurementId: ''
+    };
+    try {
+      if (typeof __FIREBASE_CONFIG__ !== 'undefined' && __FIREBASE_CONFIG__ !== null && __FIREBASE_CONFIG__ !== '') {
+        console.log("Raw __FIREBASE_CONFIG__ string:", __FIREBASE_CONFIG__);
+        const parsedConfig = JSON.parse(__FIREBASE_CONFIG__);
+        if (parsedConfig && parsedConfig.apiKey && parsedConfig.projectId && parsedConfig.appId) {
+            config = parsedConfig;
+        } else {
+            console.warn("Parsed Firebase config missing essential keys: apiKey, projectId, or appId. Using default empty config.");
+        }
+      } else {
+        console.warn("__FIREBASE_CONFIG__ is undefined, null, or empty string. Using default empty config.");
+      }
+    } catch (e) {
+      console.error("Error parsing __FIREBASE_CONFIG__:", e);
+      console.warn("Using default empty config due to parsing error.");
+    }
+    console.log("Final firebaseConfig object (after parsing/fallback):", config);
+    return config;
+  })();
+
 
   // Predefined list of genres for the dropdown
   const genres = [
@@ -128,29 +145,46 @@ const App = () => {
     let latitude = null;
     let longitude = null;
 
-    try {
-      // 1. Get Lat/Long from OpenCage
-      const opencageApiUrl = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(city)}&key=${OPENCAGE_API_KEY}&limit=1`;
-      console.log("OpenCage API URL being called:", opencageApiUrl);
+    // Retry logic for OpenCage API call
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+      try {
+        // 1. Get Lat/Long from OpenCage
+        const opencageApiUrl = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(city)}&key=${OPENCAGE_API_KEY}&limit=1`;
+        console.log(`OpenCage API URL being called (attempt ${i + 1}/${MAX_RETRIES + 1}):`, opencageApiUrl);
 
-      const opencageResponse = await fetch(opencageApiUrl);
-      if (!opencageResponse.ok) {
-        throw new Error(`OpenCage Geocoding API HTTP error! status: ${opencageResponse.status}`);
-      }
-      const opencageData = await opencageResponse.json();
+        const opencageResponse = await fetch(opencageApiUrl);
+        if (!opencageResponse.ok) {
+          const errorText = await opencageResponse.text();
+          throw new Error(`OpenCage Geocoding API HTTP error! status: ${opencageResponse.status}, response: ${errorText}`);
+        }
+        const opencageData = await opencageResponse.json();
 
-      if (opencageData.results && opencageData.results.length > 0) {
-        latitude = opencageData.results[0].geometry.lat;
-        longitude = opencageData.results[0].geometry.lng;
-        console.log(`Coordinates for ${city}: Lat ${latitude}, Lng ${longitude}`);
-      } else {
-        setError(`Could not find coordinates for "${city}". Please try a more specific city name.`);
-        setLoadingConcerts(false);
-        return;
+        if (opencageData.results && opencageData.results.length > 0) {
+          latitude = opencageData.results[0].geometry.lat;
+          longitude = opencageData.results[0].geometry.lng;
+          console.log(`Coordinates for ${city}: Lat ${latitude}, Lng ${longitude}`);
+          break; // Exit retry loop on success
+        } else {
+          throw new Error(`Could not find coordinates for "${city}".`);
+        }
+      } catch (geocodingError) {
+        console.error(`Attempt ${i + 1}/${MAX_RETRIES + 1} failed for OpenCage API:`, geocodingError);
+        if (i === MAX_RETRIES) {
+          setError(`Failed to get location coordinates after ${MAX_RETRIES + 1} attempts: ${geocodingError.message}. Please check your OpenCage API key and network connection.`);
+          showMessageBox(`Failed to get location coordinates. Please check your OpenCage API key and network connection. Error: ${geocodingError.message}`);
+          setLoadingConcerts(false);
+          return; // Stop function execution if max retries are reached
+        }
+        // Simple backoff for retries
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Wait 1s, then 2s
       }
-    } catch (geocodingError) {
-      setError(`Failed to get location coordinates: ${geocodingError.message}. Please check your OpenCage API key.`);
-      console.error("OpenCage API Error:", geocodingError);
+    }
+
+    if (!latitude || !longitude) {
+      // This block will be reached if the above loop exited without finding coordinates
+      // (e.g., if a non-API error occurred or if the city was truly not found)
+      setError(`Failed to get location coordinates for "${city}". Please try a more specific city name.`);
+      showMessageBox(`Failed to get location coordinates for "${city}". Please try a more specific city name.`);
       setLoadingConcerts(false);
       return;
     }
@@ -201,54 +235,67 @@ const App = () => {
 
     console.log("Ticketmaster API URL being called:", ticketmasterApiUrl);
 
-    try {
-      const response = await fetch(ticketmasterApiUrl);
-      if (!response.ok) {
-        throw new Error(`Ticketmaster API HTTP error! status: ${response.status}`);
+    // Retry logic for Ticketmaster API call
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+      try {
+        const response = await fetch(ticketmasterApiUrl);
+        if (!response.ok) {
+          throw new Error(`Ticketmaster API HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+
+        if (data._embedded && data._embedded.events) {
+          const fetchedConcerts = data._embedded.events.map(event => {
+            const venue = event._embedded?.venues?.[0];
+            const venueName = venue?.name || 'Unknown Venue';
+            const venueCity = venue?.city?.name || 'Unknown City';
+            const venueStateCode = venue?.state?.stateCode || '';
+            const location = venueCity + (venueStateCode ? `, ${venueStateCode}` : '');
+            const primaryClassification = event.classifications?.[0];
+            const genreName = primaryClassification?.genre?.name || 'Various';
+
+            return {
+              id: event.id,
+              artist: event.name,
+              venue: venueName,
+              date: event.dates?.start?.localDate || 'Date TBD',
+              genre: genreName,
+              location: location,
+              description: event.info || 'No additional info available.',
+              url: event.url
+            };
+          });
+          setConcerts(fetchedConcerts);
+          setPlaylist([]); // Clear any previous playlist
+          break; // Exit retry loop on success
+        } else {
+          // If no events found but response was OK, treat as no data, not an error
+          setConcerts([]);
+          setError('No concerts found for your search criteria. Try a different city, widen the radius, or adjust the date range!');
+          break; // No need to retry if API says no events
+        }
+      } catch (apiError) {
+        console.error(`Attempt ${i + 1}/${MAX_RETRIES + 1} failed for Ticketmaster API:`, apiError);
+        if (i === MAX_RETRIES) {
+          setError(`Failed to fetch concerts after ${MAX_RETRIES + 1} attempts: ${apiError.message}. Please check your Ticketmaster API key and network connection.`);
+          showMessageBox(`Failed to fetch concerts. Please check your Ticketmaster API key and network connection. Error: ${apiError.message}`);
+        }
+        // Simple backoff for retries
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Wait 1s, then 2s
       }
-      const data = await response.json();
-
-      if (data._embedded && data._embedded.events) {
-        const fetchedConcerts = data._embedded.events.map(event => {
-          const venue = event._embedded?.venues?.[0];
-          const venueName = venue?.name || 'Unknown Venue';
-          const venueCity = venue?.city?.name || 'Unknown City';
-          const venueStateCode = venue?.state?.stateCode || '';
-          const location = venueCity + (venueStateCode ? `, ${venueStateCode}` : '');
-          const primaryClassification = event.classifications?.[0];
-          const genreName = primaryClassification?.genre?.name || 'Various';
-
-          return {
-            id: event.id,
-            artist: event.name,
-            venue: venueName,
-            date: event.dates?.start?.localDate || 'Date TBD',
-            genre: genreName,
-            location: location,
-            url: event.url
-          };
-        });
-        setConcerts(fetchedConcerts);
-
-        // Do NOT generate playlist here, wait for user click
-        setPlaylist([]); // Clear any previous playlist
-      } else {
-        setConcerts([]);
-        setError('No concerts found for your search criteria. Try a different city, widen the radius, or adjust the date range!');
-      }
-    } catch (apiError) {
-      setError(`Failed to fetch concerts: ${apiError.message}. Please check your API key and network connection.`);
-      console.error("Ticketmaster API Error:", apiError);
-    } finally {
-      setLoadingConcerts(false);
     }
-  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY]);
+    setLoadingConcerts(false); // Ensure loading is turned off regardless of success or failure
+  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY, MAX_RETRIES]);
 
 
   // Firebase Initialization and Authentication
   useEffect(() => {
     try {
-      // Use the defined firebaseConfig directly
+      // Ensure firebaseConfig is valid before initializing
+      if (!firebaseConfig || !firebaseConfig.apiKey || !firebaseConfig.projectId) {
+        throw new Error("Firebase configuration is incomplete. Missing API Key or Project ID. Please check console logs for 'Final firebaseConfig object'.");
+      }
+
       const app = initializeApp(firebaseConfig);
       const firestoreDb = getFirestore(app);
       const firebaseAuth = getAuth(app);
@@ -271,14 +318,11 @@ const App = () => {
           }
         } else {
           try {
-            // In a real Vercel deployment, __initial_auth_token will not be available.
-            // You might need to adjust anonymous sign-in for production.
             const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
             if (initialAuthToken) {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
               console.log("Signed in with custom token.");
             } else {
-              // For Vercel, consider managing anonymous users with Firestore or a custom backend if persistent state is needed
               await signInAnonymously(firebaseAuth);
               console.log("Signed in anonymously.");
             }
@@ -298,7 +342,8 @@ const App = () => {
       return () => unsubscribe();
     } catch (err) {
       console.error("Firebase setup error:", err);
-      const configErrorMsg = "Firebase configuration is missing or incorrect. Please ensure VITE_FIREBASE_ environment variables are set.";
+      // Improve error message to guide user on Firebase config issues
+      const configErrorMsg = `Firebase initialization failed: ${err.message}. Please ensure your Firebase project configuration is correct and that API keys are properly set as environment variables in Vercel. Also, check your Firebase console for "Authorized domains" and enabled "Google" sign-in method.`;
       setError(configErrorMsg);
       showMessageBox(configErrorMsg);
     }
@@ -424,7 +469,8 @@ const App = () => {
         // Fetch YouTube links for each song (using the YOUTUBE_API_KEY for public search)
         const songsWithLinks = await Promise.all(parsedSongs.map(async (item) => {
           let youtubeLink = null;
-          if (YOUTUBE_API_KEY) { // Check if API key is present for search
+          // Check for placeholder YOUTUBE_API_KEY
+          if (YOUTUBE_API_KEY && YOUTUBE_API_KEY !== 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
             try {
               const searchTerm = `${item.artistName} - ${item.songTitle} official audio`;
               const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
@@ -440,7 +486,7 @@ const App = () => {
               console.error(`Error fetching YouTube link for "${item.songTitle}":`, youtubeError);
             }
           } else {
-              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided. Skipping YouTube link search.");
+              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search.");
           }
           return {
             artistName: item.artistName,
@@ -475,8 +521,9 @@ const App = () => {
       showMessageBox("Please sign in with Google and authorize YouTube access to create a playlist.");
       return;
     }
-    if (!YOUTUBE_API_KEY) { // Check if API key is present for search
-        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set in your Vercel environment variables to fetch video IDs for playlist creation.");
+    // Explicitly check for placeholder here too
+    if (YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || !YOUTUBE_API_KEY) {
+        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and not a placeholder in your environment variables to enable playlist creation.");
         return;
     }
 
@@ -486,7 +533,8 @@ const App = () => {
     try {
       // 1. Create a new YouTube playlist
       const playlistTitle = `SonicCompass Hype - ${new Date().toLocaleString()}`;
-      const createPlaylistUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,status`; // API key not strictly needed here with OAuth, but can be included
+      // Including API key in URL even for OAuth requests for robustness, although token is primary.
+      const createPlaylistUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,status&key=${YOUTUBE_API_KEY}`;
       const createPlaylistResponse = await fetch(createPlaylistUrl, {
         method: 'POST',
         headers: {
@@ -515,7 +563,7 @@ const App = () => {
 
       showMessageBox(`Playlist "${playlistData.snippet.title}" created! Now adding songs...`);
 
-      // 2. Add each selected song to the playlist
+      // 2. Search for each selected song (if no existing link) and add to the playlist
       for (const song of selectedSongs) {
         let videoId = null;
         if (song.youtubeLink) {
@@ -523,7 +571,7 @@ const App = () => {
             const urlParams = new URLSearchParams(new URL(song.youtubeLink).search);
             videoId = urlParams.get('v');
         } else {
-            // Fallback: Search for video ID if no link was generated initially, using the YOUTUBE_API_KEY
+            // Search for video ID if no link was generated initially (fallback)
             try {
                 const searchTerm = `${song.artistName} - ${song.songTitle} official audio`;
                 const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
@@ -541,7 +589,7 @@ const App = () => {
         }
 
         if (videoId) {
-            const addPlaylistItemUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet`; // API key not strictly needed here with OAuth
+            const addPlaylistItemUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&key=${YOUTUBE_API_KEY}`; // API key again might be optional
             const addPlaylistItemResponse = await fetch(addPlaylistItemUrl, {
               method: 'POST',
               headers: {
@@ -623,6 +671,10 @@ const App = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 to-indigo-900 text-gray-100 font-inter p-4 sm:p-6 lg:p-8 flex flex-col items-center">
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      {/* React and ReactDOM CDN links were removed from here because the immersive type is "code" with language "react".
+          In a React immersive, the React and ReactDOM libraries are already available and do not need to be explicitly loaded via script tags in the JSX.
+          Adding them here causes warnings about invalid DOM properties and can lead to unexpected behavior. */}
+
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
 
@@ -745,7 +797,7 @@ const App = () => {
                   <h3 className="text-xl font-bold text-blue-300">{concert.artist}</h3>
                   <p className="text-gray-300">{concert.venue} - {concert.location}</p>
                   <p className="text-sm text-gray-400">{concert.date} | {concert.genre}</p>
-                  {/* Removed description as it was not consistently available and cluttering */}
+                  <p className="text-xs text-gray-400 mt-2 line-clamp-2">{concert.description}</p>
                   {concert.url && (
                     <a
                       href={concert.url}
