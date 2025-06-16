@@ -52,9 +52,8 @@ const App = () => {
   const [searchRadius, setSearchRadius] = useState('50'); // Default search radius in miles
   const [dateFilter, setDateFilter] = useState(''); // New: for date range filtering (e.g., '30', '60', '90')
 
-  // Retries state for API calls
-  const [opencageRetries, setOpencageRetries] = useState(0);
-  const MAX_OPENCAGE_RETRIES = 2; // Limit retries to 2 attempts (initial + 2 retries)
+  // Retry configuration for API calls
+  const MAX_RETRIES = 2; // Max attempts for any API call (initial + 2 retries)
 
   // IMPORTANT: API Keys are now accessed from the global __APP_ENV__ object
   // injected by Vite, which means 'import.meta.env' is no longer used directly in App.jsx.
@@ -127,17 +126,16 @@ const App = () => {
     setSelectedConcert(null); // Clear selected concert when new search
     setPlaylist([]); // Clear previous playlist
     setError('');
-    setOpencageRetries(0); // Reset retries on new search attempt
 
     let latitude = null;
     let longitude = null;
 
     // Retry logic for OpenCage API call
-    for (let i = 0; i <= MAX_OPENCAGE_RETRIES; i++) {
+    for (let i = 0; i <= MAX_RETRIES; i++) {
       try {
         // 1. Get Lat/Long from OpenCage
         const opencageApiUrl = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(city)}&key=${OPENCAGE_API_KEY}&limit=1`;
-        console.log(`OpenCage API URL being called (attempt ${i + 1}):`, opencageApiUrl);
+        console.log(`OpenCage API URL being called (attempt ${i + 1}/${MAX_RETRIES + 1}):`, opencageApiUrl);
 
         const opencageResponse = await fetch(opencageApiUrl);
         if (!opencageResponse.ok) {
@@ -155,13 +153,12 @@ const App = () => {
           throw new Error(`Could not find coordinates for "${city}".`);
         }
       } catch (geocodingError) {
-        setOpencageRetries(prev => prev + 1);
-        console.error(`Attempt ${i + 1} failed for OpenCage API:`, geocodingError);
-        if (i === MAX_OPENCAGE_RETRIES) {
-          setError(`Failed to get location coordinates after ${MAX_OPENCAGE_RETRIES + 1} attempts: ${geocodingError.message}. Please check your OpenCage API key and network connection.`);
+        console.error(`Attempt ${i + 1}/${MAX_RETRIES + 1} failed for OpenCage API:`, geocodingError);
+        if (i === MAX_RETRIES) {
+          setError(`Failed to get location coordinates after ${MAX_RETRIES + 1} attempts: ${geocodingError.message}. Please check your OpenCage API key and network connection.`);
           showMessageBox(`Failed to get location coordinates. Please check your OpenCage API key and network connection. Error: ${geocodingError.message}`);
           setLoadingConcerts(false);
-          return;
+          return; // Stop function execution if max retries are reached
         }
         // Simple backoff for retries
         await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Wait 1s, then 2s
@@ -169,8 +166,10 @@ const App = () => {
     }
 
     if (!latitude || !longitude) {
-      setError(`Failed to get location coordinates for "${city}" after multiple attempts.`);
-      showMessageBox(`Failed to get location coordinates for "${city}" after multiple attempts.`);
+      // This block will be reached if the above loop exited without finding coordinates
+      // (e.g., if a non-API error occurred or if the city was truly not found)
+      setError(`Failed to get location coordinates for "${city}". Please try a more specific city name.`);
+      showMessageBox(`Failed to get location coordinates for "${city}". Please try a more specific city name.`);
       setLoadingConcerts(false);
       return;
     }
@@ -221,55 +220,67 @@ const App = () => {
 
     console.log("Ticketmaster API URL being called:", ticketmasterApiUrl);
 
-    try {
-      const response = await fetch(ticketmasterApiUrl);
-      if (!response.ok) {
-        throw new Error(`Ticketmaster API HTTP error! status: ${response.status}`);
+    // Retry logic for Ticketmaster API call
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+      try {
+        const response = await fetch(ticketmasterApiUrl);
+        if (!response.ok) {
+          throw new Error(`Ticketmaster API HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+
+        if (data._embedded && data._embedded.events) {
+          const fetchedConcerts = data._embedded.events.map(event => {
+            const venue = event._embedded?.venues?.[0];
+            const venueName = venue?.name || 'Unknown Venue';
+            const venueCity = venue?.city?.name || 'Unknown City';
+            const venueStateCode = venue?.state?.stateCode || '';
+            const location = venueCity + (venueStateCode ? `, ${venueStateCode}` : '');
+            const primaryClassification = event.classifications?.[0];
+            const genreName = primaryClassification?.genre?.name || 'Various';
+
+            return {
+              id: event.id,
+              artist: event.name,
+              venue: venueName,
+              date: event.dates?.start?.localDate || 'Date TBD',
+              genre: genreName,
+              location: location,
+              description: event.info || 'No additional info available.',
+              url: event.url
+            };
+          });
+          setConcerts(fetchedConcerts);
+          setPlaylist([]); // Clear any previous playlist
+          break; // Exit retry loop on success
+        } else {
+          // If no events found but response was OK, treat as no data, not an error
+          setConcerts([]);
+          setError('No concerts found for your search criteria. Try a different city, widen the radius, or adjust the date range!');
+          break; // No need to retry if API says no events
+        }
+      } catch (apiError) {
+        console.error(`Attempt ${i + 1}/${MAX_RETRIES + 1} failed for Ticketmaster API:`, apiError);
+        if (i === MAX_RETRIES) {
+          setError(`Failed to fetch concerts after ${MAX_RETRIES + 1} attempts: ${apiError.message}. Please check your Ticketmaster API key and network connection.`);
+          showMessageBox(`Failed to fetch concerts. Please check your Ticketmaster API key and network connection. Error: ${apiError.message}`);
+        }
+        // Simple backoff for retries
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Wait 1s, then 2s
       }
-      const data = await response.json();
-
-      if (data._embedded && data._embedded.events) {
-        const fetchedConcerts = data._embedded.events.map(event => {
-          const venue = event._embedded?.venues?.[0];
-          const venueName = venue?.name || 'Unknown Venue';
-          const venueCity = venue?.city?.name || 'Unknown City';
-          const venueStateCode = venue?.state?.stateCode || '';
-          const location = venueCity + (venueStateCode ? `, ${venueStateCode}` : '');
-          const primaryClassification = event.classifications?.[0];
-          const genreName = primaryClassification?.genre?.name || 'Various';
-
-          return {
-            id: event.id,
-            artist: event.name,
-            venue: venueName,
-            date: event.dates?.start?.localDate || 'Date TBD',
-            genre: genreName,
-            location: location,
-            url: event.url
-          };
-        });
-        setConcerts(fetchedConcerts);
-
-        // Do NOT generate playlist here, wait for user click
-        setPlaylist([]); // Clear any previous playlist
-      } else {
-        setConcerts([]);
-        setError('No concerts found for your search criteria. Try a different city, widen the radius, or adjust the date range!');
-      }
-    } catch (apiError) {
-      setError(`Failed to fetch concerts: ${apiError.message}. Please check your API key and network connection.`);
-      showMessageBox(`Failed to fetch concerts: ${apiError.message}. Please check your API key and network connection.`);
-      console.error("Ticketmaster API Error:", apiError);
-    } finally {
-      setLoadingConcerts(false);
     }
-  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY, MAX_OPENCAGE_RETRIES]);
+    setLoadingConcerts(false); // Ensure loading is turned off regardless of success or failure
+  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY, MAX_RETRIES]);
 
 
   // Firebase Initialization and Authentication
   useEffect(() => {
     try {
-      // Use the defined firebaseConfig directly
+      // Corrected: Ensure firebaseConfig is valid before initializing
+      if (!firebaseConfig || !firebaseConfig.apiKey || !firebaseConfig.projectId) {
+        throw new Error("Firebase configuration is incomplete. Missing API Key or Project ID.");
+      }
+
       const app = initializeApp(firebaseConfig);
       const firestoreDb = getFirestore(app);
       const firebaseAuth = getAuth(app);
@@ -292,14 +303,11 @@ const App = () => {
           }
         } else {
           try {
-            // In a real Vercel deployment, __initial_auth_token will not be available.
-            // You might need to adjust anonymous sign-in for production.
             const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
             if (initialAuthToken) {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
               console.log("Signed in with custom token.");
             } else {
-              // For Vercel, consider managing anonymous users with Firestore or a custom backend if persistent state is needed
               await signInAnonymously(firebaseAuth);
               console.log("Signed in anonymously.");
             }
@@ -319,7 +327,7 @@ const App = () => {
       return () => unsubscribe();
     } catch (err) {
       console.error("Firebase setup error:", err);
-      const configErrorMsg = "Firebase configuration is missing or incorrect. Please ensure VITE_FIREBASE_ environment variables are set.";
+      const configErrorMsg = `Firebase configuration is missing or incorrect: ${err.message}. Please ensure VITE_FIREBASE_ environment variables are set correctly in Vercel.`;
       setError(configErrorMsg);
       showMessageBox(configErrorMsg);
     }
@@ -445,7 +453,7 @@ const App = () => {
         // Fetch YouTube links for each song (using the YOUTUBE_API_KEY for public search)
         const songsWithLinks = await Promise.all(parsedSongs.map(async (item) => {
           let youtubeLink = null;
-          if (YOUTUBE_API_KEY) { // Check if API key is present for search
+          if (YOUTUBE_API_KEY && YOUTUBE_API_KEY !== 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
             try {
               const searchTerm = `${item.artistName} - ${item.songTitle} official audio`;
               const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
@@ -460,8 +468,6 @@ const App = () => {
             } catch (youtubeError) {
               console.error(`Error fetching YouTube link for "${item.songTitle}":`, youtubeError);
             }
-          } else {
-              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided. Skipping YouTube link search.");
           }
           return {
             artistName: item.artistName,
@@ -496,8 +502,8 @@ const App = () => {
       showMessageBox("Please sign in with Google and authorize YouTube access to create a playlist.");
       return;
     }
-    if (!YOUTUBE_API_KEY) { // Check if API key is present for search
-        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set in your Vercel environment variables to fetch video IDs for playlist creation.");
+    if (YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
+        showMessageBox("Please ensure your YOUTUBE_API_KEY is set in the code to fetch video IDs for playlist creation.");
         return;
     }
 
@@ -507,7 +513,7 @@ const App = () => {
     try {
       // 1. Create a new YouTube playlist
       const playlistTitle = `SonicCompass Hype - ${new Date().toLocaleString()}`;
-      const createPlaylistUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,status`; // API key not strictly needed here with OAuth, but can be included
+      const createPlaylistUrl = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,status&key=${YOUTUBE_API_KEY}`; // API key might be optional for authenticated requests, but good to include
       const createPlaylistResponse = await fetch(createPlaylistUrl, {
         method: 'POST',
         headers: {
@@ -536,7 +542,7 @@ const App = () => {
 
       showMessageBox(`Playlist "${playlistData.snippet.title}" created! Now adding songs...`);
 
-      // 2. Add each selected song to the playlist
+      // 2. Search for each selected song (if no existing link) and add to the playlist
       for (const song of selectedSongs) {
         let videoId = null;
         if (song.youtubeLink) {
@@ -544,7 +550,7 @@ const App = () => {
             const urlParams = new URLSearchParams(new URL(song.youtubeLink).search);
             videoId = urlParams.get('v');
         } else {
-            // Fallback: Search for video ID if no link was generated initially, using the YOUTUBE_API_KEY
+            // Search for video ID if no link was generated initially (fallback)
             try {
                 const searchTerm = `${song.artistName} - ${song.songTitle} official audio`;
                 const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
@@ -562,7 +568,7 @@ const App = () => {
         }
 
         if (videoId) {
-            const addPlaylistItemUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet`; // API key not strictly needed here with OAuth
+            const addPlaylistItemUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&key=${YOUTUBE_API_KEY}`; // API key again might be optional
             const addPlaylistItemResponse = await fetch(addPlaylistItemUrl, {
               method: 'POST',
               headers: {
@@ -766,7 +772,7 @@ const App = () => {
                   <h3 className="text-xl font-bold text-blue-300">{concert.artist}</h3>
                   <p className="text-gray-300">{concert.venue} - {concert.location}</p>
                   <p className="text-sm text-gray-400">{concert.date} | {concert.genre}</p>
-                  {/* Removed description as it was not consistently available and cluttering */}
+                  <p className="text-xs text-gray-400 mt-2 line-clamp-2">{concert.description}</p>
                   {concert.url && (
                     <a
                       href={concert.url}
