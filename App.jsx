@@ -52,28 +52,26 @@ const App = () => {
   const [searchRadius, setSearchRadius] = useState('50'); // Default search radius in miles
   const [dateFilter, setDateFilter] = useState(''); // New: for date range filtering (e.g., '30', '60', '90')
 
-  // IMPORTANT: Replaced hardcoded keys with environment variables for Vercel deployment
-  // You will need to set these in Vercel Project Settings -> Environment Variables.
-  // Prefix them with VITE_ as per Vite's convention for client-side exposure.
-  const TICKETMASTER_API_KEY = import.meta.env.VITE_TICKETMASTER_API_KEY;
-  const OPENCAGE_API_KEY = import.meta.env.VITE_OPENCAGE_API_KEY;
-  const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY; // This is for public video search
+  // Retries state for API calls
+  const [opencageRetries, setOpencageRetries] = useState(0);
+  const MAX_OPENCAGE_RETRIES = 2; // Limit retries to 2 attempts (initial + 2 retries)
 
-// Firebase Configuration is now directly injected as a global object by Vite
+  // IMPORTANT: API Keys are now accessed from the global __APP_ENV__ object
+  // injected by Vite, which means 'import.meta.env' is no longer used directly in App.jsx.
+  const TICKETMASTER_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_TICKETMASTER_API_KEY : '';
+  const OPENCAGE_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_OPENCAGE_API_KEY : '';
+  const YOUTUBE_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_YOUTUBE_API_KEY : ''; // This is for public video search
+
+  // Firebase Configuration is now directly injected as a global object by Vite
   // from the __FIREBASE_CONFIG__ define in vite.config.js.
   // This should resolve the issue of the Firebase API key being misinterpreted.
   const firebaseConfig = typeof __FIREBASE_CONFIG__ !== 'undefined'
-    ? __FIREBASE_CONFIG__ // Use the globally injected config
+    ? JSON.parse(__FIREBASE_CONFIG__) // Parse the injected JSON string into an object
     : {
         // Fallback for local development if Vite's define somehow isn't active
         // (though in a proper setup, __FIREBASE_CONFIG__ will always be present after build)
-        apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-        authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-        projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-        storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-        messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-        appId: import.meta.env.VITE_FIREBASE_APP_ID,
-        measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+        // Note: These fallback keys would still need to be correctly resolved if used
+        apiKey: '', authDomain: '', projectId: '', storageBucket: '', messagingSenderId: '', appId: '', measurementId: ''
       };
 
   // Predefined list of genres for the dropdown
@@ -129,33 +127,50 @@ const App = () => {
     setSelectedConcert(null); // Clear selected concert when new search
     setPlaylist([]); // Clear previous playlist
     setError('');
+    setOpencageRetries(0); // Reset retries on new search attempt
 
     let latitude = null;
     let longitude = null;
 
-    try {
-      // 1. Get Lat/Long from OpenCage
-      const opencageApiUrl = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(city)}&key=${OPENCAGE_API_KEY}&limit=1`;
-      console.log("OpenCage API URL being called:", opencageApiUrl);
+    // Retry logic for OpenCage API call
+    for (let i = 0; i <= MAX_OPENCAGE_RETRIES; i++) {
+      try {
+        // 1. Get Lat/Long from OpenCage
+        const opencageApiUrl = `https://api.opencagedata.com/geocode/v1/json?q=${encodeURIComponent(city)}&key=${OPENCAGE_API_KEY}&limit=1`;
+        console.log(`OpenCage API URL being called (attempt ${i + 1}):`, opencageApiUrl);
 
-      const opencageResponse = await fetch(opencageApiUrl);
-      if (!opencageResponse.ok) {
-        throw new Error(`OpenCage Geocoding API HTTP error! status: ${opencageResponse.status}`);
-      }
-      const opencageData = await opencageResponse.json();
+        const opencageResponse = await fetch(opencageApiUrl);
+        if (!opencageResponse.ok) {
+          const errorText = await opencageResponse.text();
+          throw new Error(`OpenCage Geocoding API HTTP error! status: ${opencageResponse.status}, response: ${errorText}`);
+        }
+        const opencageData = await opencageResponse.json();
 
-      if (opencageData.results && opencageData.results.length > 0) {
-        latitude = opencageData.results[0].geometry.lat;
-        longitude = opencageData.results[0].geometry.lng;
-        console.log(`Coordinates for ${city}: Lat ${latitude}, Lng ${longitude}`);
-      } else {
-        setError(`Could not find coordinates for "${city}". Please try a more specific city name.`);
-        setLoadingConcerts(false);
-        return;
+        if (opencageData.results && opencageData.results.length > 0) {
+          latitude = opencageData.results[0].geometry.lat;
+          longitude = opencageData.results[0].geometry.lng;
+          console.log(`Coordinates for ${city}: Lat ${latitude}, Lng ${longitude}`);
+          break; // Exit retry loop on success
+        } else {
+          throw new Error(`Could not find coordinates for "${city}".`);
+        }
+      } catch (geocodingError) {
+        setOpencageRetries(prev => prev + 1);
+        console.error(`Attempt ${i + 1} failed for OpenCage API:`, geocodingError);
+        if (i === MAX_OPENCAGE_RETRIES) {
+          setError(`Failed to get location coordinates after ${MAX_OPENCAGE_RETRIES + 1} attempts: ${geocodingError.message}. Please check your OpenCage API key and network connection.`);
+          showMessageBox(`Failed to get location coordinates. Please check your OpenCage API key and network connection. Error: ${geocodingError.message}`);
+          setLoadingConcerts(false);
+          return;
+        }
+        // Simple backoff for retries
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Wait 1s, then 2s
       }
-    } catch (geocodingError) {
-      setError(`Failed to get location coordinates: ${geocodingError.message}. Please check your OpenCage API key.`);
-      console.error("OpenCage API Error:", geocodingError);
+    }
+
+    if (!latitude || !longitude) {
+      setError(`Failed to get location coordinates for "${city}" after multiple attempts.`);
+      showMessageBox(`Failed to get location coordinates for "${city}" after multiple attempts.`);
       setLoadingConcerts(false);
       return;
     }
@@ -243,11 +258,12 @@ const App = () => {
       }
     } catch (apiError) {
       setError(`Failed to fetch concerts: ${apiError.message}. Please check your API key and network connection.`);
+      showMessageBox(`Failed to fetch concerts: ${apiError.message}. Please check your API key and network connection.`);
       console.error("Ticketmaster API Error:", apiError);
     } finally {
       setLoadingConcerts(false);
     }
-  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY]);
+  }, [city, genre, searchRadius, dateFilter, TICKETMASTER_API_KEY, OPENCAGE_API_KEY, MAX_OPENCAGE_RETRIES]);
 
 
   // Firebase Initialization and Authentication
