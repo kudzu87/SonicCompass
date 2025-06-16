@@ -59,6 +59,18 @@ const App = () => {
   const OPENCAGE_API_KEY = import.meta.env.VITE_OPENCAGE_API_KEY;
   const YOUTUBE_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY; // This is for public video search
 
+  // Firebase Configuration from Environment Variables (for Vite/Vercel)
+  // Ensure these are set in your .env file locally and in Vercel environment variables
+  const firebaseConfig = {
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID // Optional, if you enabled Analytics
+  };
+
   // Predefined list of genres for the dropdown
   const genres = [
     { value: '', label: 'All Genres' },
@@ -213,7 +225,6 @@ const App = () => {
             date: event.dates?.start?.localDate || 'Date TBD',
             genre: genreName,
             location: location,
-            description: event.info || 'No additional info available.',
             url: event.url
           };
         });
@@ -237,7 +248,7 @@ const App = () => {
   // Firebase Initialization and Authentication
   useEffect(() => {
     try {
-      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+      // Use the defined firebaseConfig directly
       const app = initializeApp(firebaseConfig);
       const firestoreDb = getFirestore(app);
       const firebaseAuth = getAuth(app);
@@ -260,11 +271,14 @@ const App = () => {
           }
         } else {
           try {
+            // In a real Vercel deployment, __initial_auth_token will not be available.
+            // You might need to adjust anonymous sign-in for production.
             const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
             if (initialAuthToken) {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
               console.log("Signed in with custom token.");
             } else {
+              // For Vercel, consider managing anonymous users with Firestore or a custom backend if persistent state is needed
               await signInAnonymously(firebaseAuth);
               console.log("Signed in anonymously.");
             }
@@ -284,9 +298,11 @@ const App = () => {
       return () => unsubscribe();
     } catch (err) {
       console.error("Firebase setup error:", err);
-      setError("Failed to initialize Firebase.");
+      const configErrorMsg = "Firebase configuration is missing or incorrect. Please ensure VITE_FIREBASE_ environment variables are set.";
+      setError(configErrorMsg);
+      showMessageBox(configErrorMsg);
     }
-  }, [fetchConcerts]);
+  }, [fetchConcerts, firebaseConfig]); // Added firebaseConfig to dependencies for clarity
 
   // Function to handle Google Sign-In with YouTube scope
   const handleGoogleSignIn = async () => {
@@ -729,7 +745,7 @@ const App = () => {
                   <h3 className="text-xl font-bold text-blue-300">{concert.artist}</h3>
                   <p className="text-gray-300">{concert.venue} - {concert.location}</p>
                   <p className="text-sm text-gray-400">{concert.date} | {concert.genre}</p>
-                  <p className="text-xs text-gray-400 mt-2 line-clamp-2">{concert.description}</p>
+                  {/* Removed description as it was not consistently available and cluttering */}
                   {concert.url && (
                     <a
                       href={concert.url}
