@@ -62,28 +62,50 @@ const App = () => {
   const YOUTUBE_API_KEY = typeof __APP_ENV__ !== 'undefined' ? __APP_ENV__.VITE_YOUTUBE_API_KEY : ''; // This is for public video search
 
   // Firebase Configuration is now directly injected as a global object by Canvas
-  // This should resolve the issue of the Firebase API key being misinterpreted.
+  // It is expected to be an object, not a JSON string, so no JSON.parse is needed.
   const firebaseConfig = (() => {
     let config = {
         apiKey: '', authDomain: '', projectId: '', storageBucket: '', messagingSenderId: '', appId: '', measurementId: ''
     };
     try {
-      if (typeof __FIREBASE_CONFIG__ !== 'undefined' && __FIREBASE_CONFIG__ !== null && __FIREBASE_CONFIG__ !== '') {
-        console.log("Raw __FIREBASE_CONFIG__ string:", __FIREBASE_CONFIG__);
-        const parsedConfig = JSON.parse(__FIREBASE_CONFIG__);
-        if (parsedConfig && parsedConfig.apiKey && parsedConfig.projectId && parsedConfig.appId) {
-            config = parsedConfig;
+      if (typeof __FIREBASE_CONFIG__ !== 'undefined' && __FIREBASE_CONFIG__ !== null) {
+        // Log the type of __FIREBASE_CONFIG__ to help diagnose if it's a string or object
+        console.log("Type of __FIREBASE_CONFIG__:", typeof __FIREBASE_CONFIG__);
+        // If it's an object, use it directly. If it's a string, then JSON.parse would be needed,
+        // but based on current error, it's likely an object already.
+        if (typeof __FIREBASE_CONFIG__ === 'object') {
+            console.log("Using __FIREBASE_CONFIG__ as an object directly.");
+            config = __FIREBASE_CONFIG__;
+        } else if (typeof __FIREBASE_CONFIG__ === 'string' && __FIREBASE_CONFIG__ !== '') {
+            console.warn("Attempting to parse __FIREBASE_CONFIG__ as string. This might indicate an unexpected environment setup.");
+            config = JSON.parse(__FIREBASE_CONFIG__);
         } else {
-            console.warn("Parsed Firebase config missing essential keys: apiKey, projectId, or appId. Using default empty config.");
+            console.warn("__FIREBASE_CONFIG__ is defined but not a valid object or non-empty string. Using default empty config.");
+        }
+
+        if (config && config.apiKey && config.projectId && config.appId) {
+            // Valid config
+        } else {
+            console.warn("Firebase config object missing essential keys (apiKey, projectId, or appId). Using default empty config or partial config.");
+            // Ensure config has all expected keys even if empty
+            config = {
+                apiKey: config.apiKey || '',
+                authDomain: config.authDomain || '',
+                projectId: config.projectId || '',
+                storageBucket: config.storageBucket || '',
+                messagingSenderId: config.messagingSenderId || '',
+                appId: config.appId || '',
+                measurementId: config.measurementId || ''
+            };
         }
       } else {
-        console.warn("__FIREBASE_CONFIG__ is undefined, null, or empty string. Using default empty config.");
+        console.warn("__FIREBASE_CONFIG__ is undefined or null. Using default empty config.");
       }
     } catch (e) {
-      console.error("Error parsing __FIREBASE_CONFIG__:", e);
-      console.warn("Using default empty config due to parsing error.");
+      console.error("Error processing __FIREBASE_CONFIG__:", e);
+      console.warn("Using default empty config due to processing error.");
     }
-    console.log("Final firebaseConfig object (after parsing/fallback):", config);
+    console.log("Final firebaseConfig object (after processing/fallback):", config);
     return config;
   })();
 
@@ -671,10 +693,6 @@ const App = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 to-indigo-900 text-gray-100 font-inter p-4 sm:p-6 lg:p-8 flex flex-col items-center">
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      {/* React and ReactDOM CDN links were removed from here because the immersive type is "code" with language "react".
-          In a React immersive, the React and ReactDOM libraries are already available and do not need to be explicitly loaded via script tags in the JSX.
-          Adding them here causes warnings about invalid DOM properties and can lead to unexpected behavior. */}
-
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
 
