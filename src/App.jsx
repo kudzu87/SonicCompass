@@ -88,9 +88,7 @@ const App = () => {
         if (config && config.apiKey && config.projectId && config.appId) {
             // Valid config - do nothing, proceed
         } else {
-            // If any essential keys are missing from the (possibly incomplete) config
             console.warn("Firebase config object missing essential keys (apiKey, projectId, or appId). Using default empty config or partial config.");
-            // Ensure config has all expected keys even if empty for consistency
             config = {
                 apiKey: config.apiKey || '',
                 authDomain: config.authDomain || '',
@@ -493,7 +491,7 @@ const App = () => {
     console.log("LLM Prompt for playlist generation:", prompt); // Debugging log
 
     try {
-      const geminiApiKey = "AIzaSyA7f5w9ybc6L3KsYx7qGEcVB5fFwP0M_7k"; // This is for the LLM call itself
+      const geminiApiKey = ""; // This is for the LLM call itself - leave empty for Canvas to inject
       const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
       const response = await fetch(geminiApiUrl, {
         method: 'POST',
