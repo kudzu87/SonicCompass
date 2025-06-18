@@ -71,23 +71,24 @@ const App = () => {
       if (typeof __FIREBASE_CONFIG__ !== 'undefined' && __FIREBASE_CONFIG__ !== null) {
         // Log the type of __FIREBASE_CONFIG__ to help diagnose if it's a string or object
         console.log("Type of __FIREBASE_CONFIG__:", typeof __FIREBASE_CONFIG__);
-        // If it's an object, use it directly. If it's a string, then JSON.parse would be needed,
-        // but based on current error, it's likely an object already.
-        if (typeof __FIREBASE_CONFIG__ === 'object') {
+        // Use it directly as it's provided as an object
+        if (typeof __FIREBASE_CONFIG__ === 'object' && __FIREBASE_CONFIG__ !== null) {
             console.log("Using __FIREBASE_CONFIG__ as an object directly.");
             config = __FIREBASE_CONFIG__;
         } else if (typeof __FIREBASE_CONFIG__ === 'string' && __FIREBASE_CONFIG__ !== '') {
-            console.warn("Attempting to parse __FIREBASE_CONFIG__ as string. This might indicate an unexpected environment setup.");
+            // Fallback for unexpected string format, though not ideal
+            console.warn("Unexpected: __FIREBASE_CONFIG__ is a string. Attempting JSON.parse().");
             config = JSON.parse(__FIREBASE_CONFIG__);
         } else {
             console.warn("__FIREBASE_CONFIG__ is defined but not a valid object or non-empty string. Using default empty config.");
         }
 
         if (config && config.apiKey && config.projectId && config.appId) {
-            // Valid config
+            // Valid config - do nothing, proceed
         } else {
+            // If any essential keys are missing from the (possibly incomplete) config
             console.warn("Firebase config object missing essential keys (apiKey, projectId, or appId). Using default empty config or partial config.");
-            // Ensure config has all expected keys even if empty
+            // Ensure config has all expected keys even if empty for consistency
             config = {
                 apiKey: config.apiKey || '',
                 authDomain: config.authDomain || '',
@@ -288,12 +289,14 @@ const App = () => {
             };
           });
           setConcerts(fetchedConcerts);
+          console.log(`Fetched ${fetchedConcerts.length} concerts:`, fetchedConcerts); // Debugging log
           setPlaylist([]); // Clear any previous playlist
           break; // Exit retry loop on success
         } else {
           // If no events found but response was OK, treat as no data, not an error
           setConcerts([]);
           setError('No concerts found for your search criteria. Try a different city, widen the radius, or adjust the date range!');
+          console.log("No concerts found in API response."); // Debugging log
           break; // No need to retry if API says no events
         }
       } catch (apiError) {
@@ -345,12 +348,21 @@ const App = () => {
               await signInWithCustomToken(firebaseAuth, initialAuthToken);
               console.log("Signed in with custom token.");
             } else {
+              // Attempt to sign in anonymously if no custom token
               await signInAnonymously(firebaseAuth);
               console.log("Signed in anonymously.");
             }
           } catch (authError) {
             console.error("Firebase Auth Error:", authError);
-            setError("Failed to authenticate with Firebase.");
+            let errorMessage = "Failed to authenticate with Firebase.";
+            if (authError.code === 'auth/admin-restricted-operation') {
+                errorMessage += "\n\nThis usually means Anonymous Authentication is not enabled in your Firebase project.";
+                errorMessage += "\n\nPlease go to Firebase Console > Authentication > Sign-in method tab, and enable 'Anonymous' authentication.";
+            } else if (authError.code === 'auth/network-request-failed') {
+                errorMessage += "\n\nFirebase network request failed. Check your internet connection or Firebase service status.";
+            }
+            setError(errorMessage);
+            showMessageBox(errorMessage);
           }
           setGoogleUser(null); // Clear Google user data on sign out/anonymous
           setYoutubeAccessToken(null); // Clear YouTube access token
@@ -396,7 +408,7 @@ const App = () => {
     } catch (googleAuthError) {
         console.error("Error during Google Sign-In:", googleAuthError);
         const errorMessage = googleAuthError.message;
-        if (errorMessage.includes("auth/unauthorized-domain")) {
+        if (googleAuthError.code === 'auth/unauthorized-domain') {
             // Attempt to get the top-level domain if running in an iframe
             const suggestedDomain = window.top.location.hostname || 'your-canvas-app-domain.example.com';
 
@@ -470,9 +482,10 @@ const App = () => {
         }
       }
     };
+    console.log("LLM Prompt for playlist generation:", prompt); // Debugging log
 
     try {
-      const geminiApiKey = ""; // This is for the LLM call itself
+      const geminiApiKey = "AIzaSyA7f5w9ybc6L3KsYx7qGEcVB5fFwP0M_7k"; // This is for the LLM call itself
       const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
       const response = await fetch(geminiApiUrl, {
         method: 'POST',
@@ -481,12 +494,25 @@ const App = () => {
       });
 
       const result = await response.json();
+      console.log("Raw LLM Response:", result); // Debugging log
 
       if (result.candidates && result.candidates.length > 0 &&
           result.candidates[0].content && result.candidates[0].content.parts &&
           result.candidates[0].content.parts.length > 0) {
         const jsonString = result.candidates[0].content.parts[0].text;
-        const parsedSongs = JSON.parse(jsonString);
+        console.log("LLM Response JSON string:", jsonString); // Debugging log
+
+        let parsedSongs = [];
+        try {
+            parsedSongs = JSON.parse(jsonString);
+            console.log("Parsed LLM Songs:", parsedSongs); // Debugging log
+        } catch (parseError) {
+            setError("Failed to parse LLM response into JSON. Check console for LLM output format.");
+            showMessageBox("Failed to process playlist from AI. AI response was not valid JSON. Please try again.");
+            console.error("JSON Parse Error on LLM response:", parseError, "Raw JSON string:", jsonString);
+            setLoadingPlaylist(false);
+            return;
+        }
 
         // Fetch YouTube links for each song (using the YOUTUBE_API_KEY for public search)
         const songsWithLinks = await Promise.all(parsedSongs.map(async (item) => {
@@ -508,7 +534,8 @@ const App = () => {
               console.error(`Error fetching YouTube link for "${item.songTitle}":`, youtubeError);
             }
           } else {
-              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search.");
+              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search for song:", item.songTitle);
+              showMessageBox("YouTube Data API Key (VITE_YOUTUBE_API_KEY) is missing or a placeholder. YouTube Music links and playlist creation will not work.");
           }
           return {
             artistName: item.artistName,
@@ -518,14 +545,21 @@ const App = () => {
           };
         }));
         setPlaylist(songsWithLinks);
+        if (songsWithLinks.length > 0) {
+            showMessageBox(`Playlist generated with ${songsWithLinks.length} songs. Check the 'Your Hype Playlist' section.`);
+        } else {
+            showMessageBox("Playlist generated, but no songs were found. Try regenerating or check LLM response.");
+        }
 
       } else {
         setError("LLM response was not as expected. Could not generate playlist.");
-        console.error("LLM Error:", result);
+        console.error("LLM Error: Candidates or content missing from response.", result);
+        showMessageBox("Failed to generate playlist. AI response was empty or malformed.");
       }
     } catch (apiError) {
-      setError("Failed to generate playlist. Please try again.");
-      console.error("API Call Error:", apiError);
+      setError("Failed to generate playlist. Please try again. Check console for details.");
+      console.error("API Call Error during LLM generation:", apiError);
+      showMessageBox("Failed to generate playlist due to an API error. Check your internet connection and console logs.");
     } finally {
       setLoadingPlaylist(false);
     }
@@ -699,10 +733,11 @@ const App = () => {
       <style>{`
         body { font-family: 'Inter', sans-serif; }
         .scrollable-list {
-          max-height: 400px; /* Max height for scrollable areas */
+          max-height: 400px; /* Increased max height */
           overflow-y: auto;  /* Enable vertical scrolling */
           -ms-overflow-style: none;  /* IE and Edge */
           scrollbar-width: none;   /* Firefox */
+          padding-right: 1rem; /* Add some padding for visual separation from scroll area */
         }
         .scrollable-list::-webkit-scrollbar {
           display: none; /* Chrome, Safari, Opera*/
@@ -805,30 +840,33 @@ const App = () => {
                 <p className="ml-3 text-blue-300">Fetching concerts...</p>
               </div>
             ) : concerts.length > 0 ? (
-              concerts.map((concert) => (
-                <div
-                  key={concert.id}
-                  className={`bg-gray-700 bg-opacity-80 p-4 rounded-lg shadow-lg cursor-pointer transform transition duration-200 hover:scale-[1.02]
-                              ${selectedConcert?.id === concert.id ? 'border-2 border-blue-400' : 'border border-transparent'}`}
-                  onClick={() => handleSelectConcert(concert)}
-                >
-                  <h3 className="text-xl font-bold text-blue-300">{concert.artist}</h3>
-                  <p className="text-gray-300">{concert.venue} - {concert.location}</p>
-                  <p className="text-sm text-gray-400">{concert.date} | {concert.genre}</p>
-                  <p className="text-xs text-gray-400 mt-2 line-clamp-2">{concert.description}</p>
-                  {concert.url && (
-                    <a
-                      href={concert.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300 text-sm mt-2 block"
-                      onClick={(e) => e.stopPropagation()} // Prevent selecting concert when clicking link
-                    >
-                      View Tickets
-                    </a>
-                  )}
-                </div>
-              ))
+              <>
+                <p className="text-gray-300 text-sm mb-2">Concerts Found: {concerts.length}</p> {/* Added concert count */}
+                {concerts.map((concert) => (
+                  <div
+                    key={concert.id}
+                    className={`bg-gray-700 bg-opacity-80 p-4 rounded-lg shadow-lg cursor-pointer transform transition duration-200 hover:scale-[1.02]
+                                ${selectedConcert?.id === concert.id ? 'border-2 border-blue-400' : 'border border-transparent'}`}
+                    onClick={() => handleSelectConcert(concert)}
+                  >
+                    <h3 className="text-xl font-bold text-blue-300">{concert.artist}</h3>
+                    <p className="text-gray-300">{concert.venue} - {concert.location}</p>
+                    <p className="text-sm text-gray-400">{concert.date} | {concert.genre}</p>
+                    <p className="text-xs text-gray-400 mt-2 line-clamp-2">{concert.description}</p>
+                    {concert.url && (
+                      <a
+                        href={concert.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 text-sm mt-2 block"
+                        onClick={(e) => e.stopPropagation()} // Prevent selecting concert when clicking link
+                      >
+                        View Tickets
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </>
             ) : (
               <p className="text-gray-400 text-center">No concerts found. Try a different city or widen the search radius!</p>
             )}
