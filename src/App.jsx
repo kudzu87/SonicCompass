@@ -54,6 +54,8 @@ const App = () => {
 
   // Retry configuration for API calls
   const MAX_RETRIES = 2; // Max attempts for any API call (initial + 2 retries)
+  const MAX_ARTISTS_FOR_LLM = 15; // Limit for artists sent to LLM to avoid prompt too long errors
+
 
   // IMPORTANT: API Keys are now accessed from the global __APP_ENV__ object
   // injected by Vite, which means 'import.meta.env' is no longer used directly in App.jsx.
@@ -453,11 +455,17 @@ const App = () => {
     setPlaylist([]); // Clear previous playlist
     setError('');
 
-    const uniqueArtists = [...new Set(concerts.map(c => c.artist))];
+    let uniqueArtists = [...new Set(concerts.map(c => c.artist))];
     if (uniqueArtists.length === 0) {
         setLoadingPlaylist(false);
         showMessageBox("No unique artists found in the current concert list to generate a playlist.");
         return;
+    }
+
+    // Limit the number of artists sent to LLM
+    if (uniqueArtists.length > MAX_ARTISTS_FOR_LLM) {
+        showMessageBox(`Found ${uniqueArtists.length} unique artists. Generating playlist for the first ${MAX_ARTISTS_FOR_LLM} artists to ensure faster processing.`);
+        uniqueArtists = uniqueArtists.slice(0, MAX_ARTISTS_FOR_LLM);
     }
 
     const artistsPromptList = uniqueArtists.map(artist => `"${artist}"`).join(', ');
@@ -485,7 +493,6 @@ const App = () => {
     console.log("LLM Prompt for playlist generation:", prompt); // Debugging log
 
     try {
-      // Using the user-provided Gemini API key
       const geminiApiKey = "AIzaSyA7f5w9ybc6L3KsYx7qGEcVB5fFwP0M_7k"; // This is for the LLM call itself
       const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
       const response = await fetch(geminiApiUrl, {
@@ -523,9 +530,9 @@ const App = () => {
           if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
               console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search for song:", item.songTitle);
               showMessageBox("YouTube Data API Key (VITE_YOUTUBE_API_KEY) is missing or a placeholder. YouTube Music links and playlist creation will not work. Please set a valid YouTube Data API Key.");
-          } else if (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY !== firebaseConfig.apiKey) {
-              console.warn("YouTube Data API Key appears to be a Firebase API key, which might not be configured for YouTube Data API v3. Skipping YouTube link search for song:", item.songTitle);
-              showMessageBox("YouTube Data API Key might be incorrect. Ensure it's a valid YouTube Data API Key from Google Cloud and YouTube Data API v3 is enabled for it.");
+          } else if (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY === firebaseConfig.apiKey) { // Corrected check
+              console.warn("YouTube Data API Key appears to be the same as Firebase API key, which might not be configured for YouTube Data API v3. Skipping YouTube link search for song:", item.songTitle);
+              showMessageBox("YouTube Data API Key might be incorrect (same as Firebase API key). Ensure it's a valid YouTube Data API Key from Google Cloud and YouTube Data API v3 is enabled for it.");
           }
           else {
             try {
@@ -593,7 +600,7 @@ const App = () => {
       return;
     }
     // Explicitly check for placeholder here too
-    if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY !== firebaseConfig.apiKey)) {
+    if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY === firebaseConfig.apiKey)) {
         showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and is a valid YouTube Data API Key from Google Cloud with YouTube Data API v3 enabled. It might be incorrect.");
         return;
     }
