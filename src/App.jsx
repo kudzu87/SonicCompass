@@ -519,11 +519,25 @@ const App = () => {
         const songsWithLinks = await Promise.all(parsedSongs.map(async (item) => {
           let youtubeLink = null;
           // Check for placeholder YOUTUBE_API_KEY
-          if (YOUTUBE_API_KEY && YOUTUBE_API_KEY !== 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
+          // Also warn if it looks like a Firebase API key being used for YouTube
+          if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
+              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search for song:", item.songTitle);
+              showMessageBox("YouTube Data API Key (VITE_YOUTUBE_API_KEY) is missing or a placeholder. YouTube Music links and playlist creation will not work. Please set a valid YouTube Data API Key.");
+          } else if (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY !== firebaseConfig.apiKey) {
+              console.warn("YouTube Data API Key appears to be a Firebase API key, which might not be configured for YouTube Data API v3. Skipping YouTube link search for song:", item.songTitle);
+              showMessageBox("YouTube Data API Key might be incorrect. Ensure it's a valid YouTube Data API Key from Google Cloud and YouTube Data API v3 is enabled for it.");
+          }
+          else {
             try {
               const searchTerm = `${item.artistName} - ${item.songTitle} official audio`;
               const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
               const searchResponse = await fetch(searchUrl);
+              if (!searchResponse.ok) {
+                  const errorData = await searchResponse.json();
+                  console.error(`YouTube Search API HTTP error! Status: ${searchResponse.status}, Error: ${errorData.error.message}`, errorData);
+                  showMessageBox(`Failed to fetch YouTube link for "${item.songTitle}". Error: ${errorData.error.message}. Please check your YouTube Data API Key.`);
+                  return { ...item, youtubeLink: null }; // Return item without link on error
+              }
               const searchData = await searchResponse.json();
               const videoId = searchData.items?.[0]?.id?.videoId;
               if (videoId) {
@@ -533,10 +547,8 @@ const App = () => {
               }
             } catch (youtubeError) {
               console.error(`Error fetching YouTube link for "${item.songTitle}":`, youtubeError);
+              showMessageBox(`Error fetching YouTube link for "${item.songTitle}". Check console for details.`);
             }
-          } else {
-              console.warn("YouTube Data API Key (VITE_YOUTUBE_API_KEY) not provided or is a placeholder. Skipping YouTube link search for song:", item.songTitle);
-              showMessageBox("YouTube Data API Key (VITE_YOUTUBE_API_KEY) is missing or a placeholder. YouTube Music links and playlist creation will not work.");
           }
           return {
             artistName: item.artistName,
@@ -581,8 +593,8 @@ const App = () => {
       return;
     }
     // Explicitly check for placeholder here too
-    if (YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || !YOUTUBE_API_KEY) {
-        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and not a placeholder in your environment variables to enable playlist creation.");
+    if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY !== firebaseConfig.apiKey)) {
+        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and is a valid YouTube Data API Key from Google Cloud with YouTube Data API v3 enabled. It might be incorrect.");
         return;
     }
 
@@ -635,6 +647,12 @@ const App = () => {
                 const searchTerm = `${song.artistName} - ${song.songTitle} official audio`;
                 const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&q=${encodeURIComponent(searchTerm)}&type=video&maxResults=1&key=${YOUTUBE_API_KEY}`;
                 const searchResponse = await fetch(searchUrl);
+                if (!searchResponse.ok) {
+                    const errorData = await searchResponse.json();
+                    console.error(`YouTube Search API HTTP error for adding item! Status: ${searchResponse.status}, Error: ${errorData.error.message}`, errorData);
+                    showMessageBox(`Failed to find video for "${song.artistName} - ${song.songTitle}" for playlist item. Error: ${errorData.error.message}. Skipping.`);
+                    continue; // Skip to next song
+                }
                 const searchData = await searchResponse.json();
                 videoId = searchData.items?.[0]?.id?.videoId;
                 if (!videoId) {
