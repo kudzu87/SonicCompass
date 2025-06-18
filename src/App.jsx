@@ -491,7 +491,15 @@ const App = () => {
     console.log("LLM Prompt for playlist generation:", prompt); // Debugging log
 
     try {
-      const geminiApiKey = ""; // This is for the LLM call itself - leave empty for Canvas to inject
+      const geminiApiKey = "AIzaSyBVeaUMhAZQWzP5_CdwxfFmrWFArucBnL8"; // This is for the LLM call itself - explicitly set for now
+      if (!geminiApiKey || geminiApiKey === "YOUR_GOOGLE_CLOUD_GEMINI_API_KEY_HERE" || geminiApiKey.length < 10) { // Basic check for validity
+          const msg = "Gemini API Key is missing or invalid. Please ensure it is set correctly in src/App.jsx.";
+          setError(msg);
+          showMessageBox(msg);
+          setLoadingPlaylist(false);
+          return;
+      }
+
       const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
       const response = await fetch(geminiApiUrl, {
         method: 'POST',
