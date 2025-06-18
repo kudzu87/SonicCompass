@@ -485,6 +485,7 @@ const App = () => {
     console.log("LLM Prompt for playlist generation:", prompt); // Debugging log
 
     try {
+      // Using the user-provided Gemini API key
       const geminiApiKey = "AIzaSyA7f5w9ybc6L3KsYx7qGEcVB5fFwP0M_7k"; // This is for the LLM call itself
       const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
       const response = await fetch(geminiApiUrl, {
@@ -552,9 +553,11 @@ const App = () => {
         }
 
       } else {
-        setError("LLM response was not as expected. Could not generate playlist.");
+        // More specific error logging for LLM response
+        const errorDetail = result.error ? `Error: ${result.error.message}` : 'Unknown error structure.';
+        setError(`LLM response was not as expected. Could not generate playlist. ${errorDetail}`);
         console.error("LLM Error: Candidates or content missing from response.", result);
-        showMessageBox("Failed to generate playlist. AI response was empty or malformed.");
+        showMessageBox(`Failed to generate playlist. AI response was empty or malformed. ${errorDetail}`);
       }
     } catch (apiError) {
       setError("Failed to generate playlist. Please try again. Check console for details.");
