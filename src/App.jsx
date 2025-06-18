@@ -547,8 +547,10 @@ const App = () => {
               const searchResponse = await fetch(searchUrl);
               if (!searchResponse.ok) {
                   const errorData = await searchResponse.json();
-                  console.error(`YouTube Search API HTTP error! Status: ${searchResponse.status}, Error: ${errorData.error.message}`, errorData);
-                  showMessageBox(`Failed to fetch YouTube link for "${item.songTitle}". Error: ${errorData.error.message}. Please check your YouTube Data API Key.`);
+                  // More specific error message for YouTube API key issues
+                  const youtubeErrorMessage = errorData.error && errorData.error.message ? errorData.error.message : 'Unknown YouTube API error.';
+                  console.error(`YouTube Search API HTTP error! Status: ${searchResponse.status}, Error: ${youtubeErrorMessage}`, errorData);
+                  showMessageBox(`Failed to fetch YouTube link for "${item.songTitle}". Error: ${youtubeErrorMessage}. Ensure your VITE_YOUTUBE_API_KEY is correct and YouTube Data API v3 is enabled in your Google Cloud Project.`);
                   return { ...item, youtubeLink: null }; // Return item without link on error
               }
               const searchData = await searchResponse.json();
@@ -606,10 +608,16 @@ const App = () => {
       return;
     }
     // Explicitly check for placeholder here too
-    if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE' || (YOUTUBE_API_KEY.startsWith('AIzaSy') && YOUTUBE_API_KEY === firebaseConfig.apiKey)) {
-        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and is a valid YouTube Data API Key from Google Cloud with YouTube Data API v3 enabled. It might be incorrect.");
+    if (!YOUTUBE_API_KEY || YOUTUBE_API_KEY === 'YOUR_YOUTUBE_DATA_API_KEY_HERE') {
+        showMessageBox("Please ensure your YouTube Data API Key (VITE_YOUTUBE_API_KEY) is set and is a valid YouTube Data API Key from Google Cloud. Playlist creation will not work without it.");
         return;
     }
+    // Specific check for API key and OAuth credential project mismatch
+    if (YOUTUBE_API_KEY.startsWith('AIzaSy') && firebaseConfig.apiKey && YOUTUBE_API_KEY !== firebaseConfig.apiKey) {
+        showMessageBox("YouTube Data API Key appears to be from a different Google Cloud Project than your Firebase authentication. This will prevent playlist creation. Please ensure both are from the same Google Cloud Project.");
+        return;
+    }
+
 
     setLoadingPlaylist(true);
     let playlistId = null;
@@ -638,7 +646,13 @@ const App = () => {
 
       if (!createPlaylistResponse.ok) {
         const errorData = await createPlaylistResponse.json();
-        throw new Error(`Failed to create playlist: ${errorData.error.message || createPlaylistResponse.statusText}`);
+        const errorMessage = errorData.error && errorData.error.message ? errorData.error.message : createPlaylistResponse.statusText;
+        // More specific error message for project mismatch
+        if (errorMessage.includes("API Key and the authentication credential are from different projects")) {
+            throw new Error(`Failed to create playlist: ${errorMessage}. This means your YOUTUBE_API_KEY is from a different Google Cloud Project than your Firebase authentication. Please ensure both are from the same Google Cloud Project.`);
+        } else {
+            throw new Error(`Failed to create playlist: ${errorMessage}`);
+        }
       }
 
       const playlistData = await createPlaylistResponse.json();
@@ -662,8 +676,9 @@ const App = () => {
                 const searchResponse = await fetch(searchUrl);
                 if (!searchResponse.ok) {
                     const errorData = await searchResponse.json();
-                    console.error(`YouTube Search API HTTP error for adding item! Status: ${searchResponse.status}, Error: ${errorData.error.message}`, errorData);
-                    showMessageBox(`Failed to find video for "${song.artistName} - ${song.songTitle}" for playlist item. Error: ${errorData.error.message}. Skipping.`);
+                    const youtubeErrorMessage = errorData.error && errorData.error.message ? errorData.error.message : 'Unknown YouTube API error.';
+                    console.error(`YouTube Search API HTTP error for adding item! Status: ${searchResponse.status}, Error: ${youtubeErrorMessage}`, errorData);
+                    showMessageBox(`Failed to find video for "${song.artistName} - ${song.songTitle}" for playlist item. Error: ${youtubeErrorMessage}. Skipping.`);
                     continue; // Skip to next song
                 }
                 const searchData = await searchResponse.json();
@@ -674,7 +689,7 @@ const App = () => {
                 }
             } catch (searchError) {
                 console.error(`Error searching for video for "${song.songTitle}":`, searchError);
-                showMessageBox(`Error searching for "${song.artistName} - ${song.songTitle}". Skipping.`);
+                showMessageBox(`Error searching for "${song.artistName} - ${song.songTitle}". Check console for details.`);
             }
         }
 
